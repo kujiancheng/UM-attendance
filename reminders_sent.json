@@ -144,7 +144,8 @@
   "notified_sessids": [
     "sess_866132_success",
     "sess_862220_needs_password",
-    "sess_862235_needs_password"
+    "sess_862235_needs_password",
+    "sess_862554_needs_password"
   ],
   "143190": [
     "new_alert"
