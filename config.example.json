@@ -1,0 +1,10 @@
+{
+  "site_url": "https://spectrum.um.edu.my",
+  "token": "",
+  "private_token": "",
+  "moodle_session_cookie": "",
+  "user_id": 0,
+  "check_interval_minutes": 15,
+  "telegram_bot_token": "",
+  "telegram_chat_id": ""
+}

@@ -1,0 +1,78 @@
+name: UM Auto-Attend & Keep-Alive
+
+on:
+  # Staggered off-peak cron schedules as automatic watchdog kickstart
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+    - cron: '2,17,32,47 0,1,2,3,4,5,6,7,8,9,10 * * 1-5'
+  # Self-ping & manual trigger via GitHub REST API
+  workflow_dispatch:
+
+concurrency:
+  group: um-auto-attend-cloud
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  check-attendance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Auto-Attend Cloud Loop (3 Hours, Every 5 Mins)
+        env:
+          MOODLE_COOKIE: ${{ secrets.MOODLE_COOKIE }}
+          MOODLE_TOKEN: ${{ secrets.MOODLE_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          USER_ID: ${{ secrets.USER_ID }}
+        run: |
+          python auto_attend.py --cloud-loop 180 --interval 5 || true
+
+      - name: Save reminder state
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add reminders_sent.json 2>/dev/null || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: update reminder state [skip ci]"
+            git pull --rebase origin main || true
+            git push origin main || true
+          fi
+
+      - name: Self-Ping Next Cloud Run
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          MYT_HOUR=$(TZ=Asia/Kuala_Lumpur date +%-H)
+          if [ "$MYT_HOUR" -ge 7 ] && [ "$MYT_HOUR" -le 22 ]; then
+            echo " Daytime MYT ($MYT_HOUR:00): Self-pinging next GitHub Actions run..."
+            curl -s -X POST \
+              -H "Authorization: token ${GH_PAT}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/main.yml/dispatches" \
+              -d '{"ref":"main"}' || true
+          else
+            echo "🌙 Overnight MYT ($MYT_HOUR:00): Pausing continuous loop until morning kickstart."
+          fi
