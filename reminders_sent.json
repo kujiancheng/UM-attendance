@@ -142,7 +142,8 @@
     "submitted"
   ],
   "notified_sessids": [
-    "sess_866132_success"
+    "sess_866132_success",
+    "sess_862220_needs_password"
   ],
   "143190": [
     "new_alert"
