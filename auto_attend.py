@@ -899,16 +899,7 @@ def sync_reminders_git():
 
 
 def run_cloud_loop(config: dict, duration_minutes: int):
-    """Run checks in a loop inside GitHub Actions for duration_minutes."""
-    from datetime import timezone
-    myt_now = datetime.now(timezone.utc) + timedelta(hours=8)
-    # Overnight quiet window (00:30 to 07:15 MYT): run a single check and let morning cron resume
-    if myt_now.hour > 0 and (myt_now.hour < 7 or (myt_now.hour == 7 and myt_now.minute < 15)):
-        log(f"🌙 Overnight MYT ({myt_now.strftime('%H:%M')}): running single check...")
-        run_check(config, single_run=True)
-        sync_reminders_git()
-        return
-
+    """Run checks in a loop inside GitHub Actions for duration_minutes (24/7 continuous)."""
     interval = max(1, config.get("check_interval_minutes", 5))
     end_time = time.time() + (duration_minutes * 60)
     cycle = 0
