@@ -54,26 +54,53 @@ def format_time_remaining(seconds: float) -> str:
     return f"{minutes} minutes"
 
 
-def check_submission_status(site_url: str, token: str, assign_id: int) -> bool:
-    """Check if the user has already submitted the assignment."""
-    try:
-        sub_r = requests.get(
-            f"{site_url}/webservice/rest/server.php",
-            params={
-                "wstoken": token,
-                "wsfunction": "mod_assign_get_submission_status",
-                "assignid": assign_id,
-                "moodlewsrestformat": "json"
-            },
-            timeout=10
-        )
-        sub_data = sub_r.json()
-        sub = sub_data.get("lastattempt", {}).get("submission", {})
-        if sub and sub.get("status") == "submitted":
-            return True
-    except Exception:
-        pass
-    return False
+def check_submission_status(site_url: str, token: str, assign_id: int):
+    """
+    Check if the user (or their group) has already submitted the assignment.
+    Returns:
+      True  -> Confirmed submitted (individual or team submission, or graded)
+      False -> Confirmed not submitted
+      None  -> API/network error (caller must NOT send a false 'not submitted' alert)
+    """
+    url = f"{site_url.rstrip('/')}/webservice/rest/server.php"
+    data = {
+        "wstoken": token,
+        "wsfunction": "mod_assign_get_submission_status",
+        "assignid": assign_id,
+        "moodlewsrestformat": "json",
+    }
+    for attempt in range(1, 4):
+        try:
+            sub_r = requests.post(url, data=data, timeout=15)
+            sub_r.raise_for_status()
+            sub_data = sub_r.json()
+            if isinstance(sub_data, dict) and "exception" in sub_data:
+                return None
+
+            last_attempt = sub_data.get("lastattempt") or {}
+            if last_attempt.get("gradingstatus") == "graded":
+                return True
+
+            # Check both individual submission and group/team submission
+            for key in ("submission", "teamsubmission"):
+                sub = last_attempt.get(key) or {}
+                if sub.get("status") == "submitted":
+                    return True
+                # Also check if files or online text were uploaded in draft/team plugins
+                for plugin in sub.get("plugins", []):
+                    for fb in plugin.get("fileareas", []):
+                        if fb.get("files"):
+                            return True
+                    for ef in plugin.get("editorfields", []):
+                        if ef.get("text", "").strip():
+                            return True
+            return False
+        except Exception:
+            if attempt < 3:
+                time.sleep(2 * attempt)
+                continue
+            return None
+    return None
 
 
 def send_tg_message(tg_token: str, tg_chat: str, msg: str):
@@ -102,22 +129,29 @@ def check_assignment_deadlines(site_url: str, token: str, tg_token: str = None, 
     if not token or token == "YOUR_MOODLE_TOKEN_HERE_OR_LEAVE_EMPTY":
         return []
 
-    # 1. Fetch assignments across all enrolled courses
-    try:
-        r = requests.get(
-            f"{site_url}/webservice/rest/server.php",
-            params={
-                "wstoken": token,
-                "wsfunction": "mod_assign_get_assignments",
-                "moodlewsrestformat": "json"
-            },
-            timeout=15
-        )
-        data = r.json()
-        courses = data.get("courses", [])
-    except Exception as e:
-        print(f"Failed to fetch assignments: {e}")
-        return []
+    # 1. Fetch assignments across all enrolled courses (with POST + retry)
+    courses = []
+    for attempt in range(1, 4):
+        try:
+            r = requests.post(
+                f"{site_url.rstrip('/')}/webservice/rest/server.php",
+                data={
+                    "wstoken": token,
+                    "wsfunction": "mod_assign_get_assignments",
+                    "moodlewsrestformat": "json",
+                },
+                timeout=20,
+            )
+            r.raise_for_status()
+            data = r.json()
+            courses = data.get("courses", [])
+            break
+        except Exception as e:
+            if attempt < 3:
+                time.sleep(2 * attempt)
+                continue
+            print(f"Failed to fetch assignments: {e}")
+            return []
 
     for c in courses:
         cname = c.get("shortname", c.get("fullname", ""))
@@ -132,6 +166,10 @@ def check_assignment_deadlines(site_url: str, token: str, tg_token: str = None, 
                     state[assign_id] = ["archived"]
                 continue
 
+            # If already confirmed submitted (or group-leader submitted), skip immediately
+            if state.get(assign_id) == ["submitted"]:
+                continue
+
             time_left_sec = (duedate - now) if duedate else None
             time_left_hours = (time_left_sec / 3600.0) if time_left_sec is not None else None
             due_str = datetime.fromtimestamp(duedate).strftime("%d %b %Y, %I:%M %p") if duedate else "No due date specified"
@@ -139,8 +177,11 @@ def check_assignment_deadlines(site_url: str, token: str, tg_token: str = None, 
 
             # Check if this assignment is already submitted
             is_submitted = check_submission_status(site_url, token, a["id"])
-            if is_submitted:
+            if is_submitted is True:
                 state[assign_id] = ["submitted"]
+                continue
+            if is_submitted is None:
+                # Transient network/API error: do not send false 'not submitted' alert
                 continue
 
             # -------------------------------------------------------------
@@ -274,15 +315,16 @@ def check_assignment_deadlines(site_url: str, token: str, tg_token: str = None, 
 def get_upcoming_assignments_summary(site_url: str, token: str) -> str:
     """Return a formatted string of all upcoming assignments and submission status."""
     now = time.time()
+    state = load_reminders_state()
     try:
-        r = requests.get(
-            f"{site_url}/webservice/rest/server.php",
-            params={
+        r = requests.post(
+            f"{site_url.rstrip('/')}/webservice/rest/server.php",
+            data={
                 "wstoken": token,
                 "wsfunction": "mod_assign_get_assignments",
                 "moodlewsrestformat": "json"
             },
-            timeout=15
+            timeout=20
         )
         data = r.json()
         courses = data.get("courses", [])
@@ -295,7 +337,8 @@ def get_upcoming_assignments_summary(site_url: str, token: str) -> str:
         for a in c.get("assignments", []):
             due = a.get("duedate", 0)
             if due and due > now:
-                is_submitted = check_submission_status(site_url, token, a["id"])
+                aid = str(a["id"])
+                is_submitted = (state.get(aid) == ["submitted"]) or (check_submission_status(site_url, token, a["id"]) is True)
                 status_text = "✅ Submitted" if is_submitted else "⚠️ Not submitted"
 
                 time_left_days = (due - now) / 86400.0
