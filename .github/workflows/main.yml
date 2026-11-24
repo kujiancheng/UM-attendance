@@ -60,19 +60,14 @@ jobs:
             git push origin main || true
           fi
 
-      - name: Self-Ping Next Cloud Run
+      - name: Self-Ping Next Cloud Run (24/7 Nonstop)
         if: always()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          MYT_HOUR=$(TZ=Asia/Kuala_Lumpur date +%-H)
-          if [ "$MYT_HOUR" -ge 7 ] && [ "$MYT_HOUR" -le 22 ]; then
-            echo " Daytime MYT ($MYT_HOUR:00): Self-pinging next GitHub Actions run..."
-            curl -s -X POST \
-              -H "Authorization: token ${GH_PAT}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/main.yml/dispatches" \
-              -d '{"ref":"main"}' || true
-          else
-            echo "🌙 Overnight MYT ($MYT_HOUR:00): Pausing continuous loop until morning kickstart."
-          fi
+          echo "🔄 Self-pinging next GitHub Actions run (24/7 continuous loop)..."
+          curl -s -X POST \
+            -H "Authorization: token ${GH_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/main.yml/dispatches" \
+            -d '{"ref":"main"}' || true
